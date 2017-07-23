@@ -23,7 +23,7 @@ public class PurchaseAnalysis {
 
 	public static void main(String[] args) throws IOException, InterruptedException {
 		Properties props = new Properties();
-		props.put(StreamsConfig.APPLICATION_ID_CONFIG, "streams-purchase-analysis2");
+		props.put(StreamsConfig.APPLICATION_ID_CONFIG, "streams-purchase-analysis2");//指明cosumer_id
 		props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "kafka0:19092");
 		props.put(StreamsConfig.ZOOKEEPER_CONNECT_CONFIG, "zookeeper0:12181/kafka");
 		props.put(StreamsConfig.KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
@@ -31,31 +31,34 @@ public class PurchaseAnalysis {
 		props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
 		props.put(StreamsConfig.TIMESTAMP_EXTRACTOR_CLASS_CONFIG, OrderTimestampExtractor.class);
 
-		KStreamBuilder streamBuilder = new KStreamBuilder();
-		KStream<String, Order> orderStream = streamBuilder.stream(Serdes.String(), SerdesFactory.serdFrom(Order.class), "orders");
+		KStreamBuilder streamBuilder = new KStreamBuilder();//构建流处理
+		KStream<String, Order> orderStream = streamBuilder.stream(Serdes.String(), SerdesFactory.serdFrom(Order.class), "orders");//订阅数据流
 		KTable<String, User> userTable = streamBuilder.table(Serdes.String(), SerdesFactory.serdFrom(User.class), "users", "users-state-store");
 		KTable<String, Item> itemTable = streamBuilder.table(Serdes.String(), SerdesFactory.serdFrom(Item.class), "items", "items-state-store");
 //		itemTable.toStream().foreach((String itemName, Item item) -> System.out.printf("Item info %s-%s-%s-%s\n", item.getItemName(), item.getAddress(), item.getType(), item.getPrice()));
 		KTable<String, Double> kTable = orderStream
-				.leftJoin(userTable, (Order order, User user) -> OrderUser.fromOrderUser(order, user), Serdes.String(), SerdesFactory.serdFrom(Order.class))
+				//使用非窗口左连接将该流的值与使用相同键的KTable元素组合。第二个参数的主要作用是把两个值合并为一个值。产生新流（ｋｖ形式）
+				.leftJoin(userTable, (Order order, User user) -> OrderUser.	fromOrderUser(order, user), Serdes.String(), SerdesFactory.serdFrom(Order.class))
+				//进行过滤筛选
 				.filter((String userName, OrderUser orderUser) -> orderUser.userAddress != null)
 				.map((String userName, OrderUser orderUser) -> new KeyValue<String, OrderUser>(orderUser.itemName, orderUser))
+				//numPartitions是指orderUser的partation的数量。产生新流
 				.through(Serdes.String(), SerdesFactory.serdFrom(OrderUser.class), (String key, OrderUser orderUser, int numPartitions) -> (orderUser.getItemName().hashCode() & 0x7FFFFFFF) % numPartitions, "orderuser-repartition-by-item")
 				.leftJoin(itemTable, (OrderUser orderUser, Item item) -> OrderUserItem.fromOrderUser(orderUser, item), Serdes.String(), SerdesFactory.serdFrom(OrderUser.class))
 				.filter((String item, OrderUserItem orderUserItem) -> StringUtils.compare(orderUserItem.userAddress, orderUserItem.itemAddress) == 0)
 //				.foreach((String itemName, OrderUserItem orderUserItem) -> System.out.printf("%s-%s-%s-%s\n", itemName, orderUserItem.itemAddress, orderUserItem.userName, orderUserItem.userAddress))
 				.map((String item, OrderUserItem orderUserItem) -> KeyValue.<String, Double>pair(orderUserItem.gender, (Double)(orderUserItem.quantity * orderUserItem.itemPrice)))
-				.groupByKey(Serdes.String(), Serdes.Double())
+				.groupByKey(Serdes.String(), Serdes.Double())//生成KGroupedStream 对象，根据键进行规约，类似与mapreduce中的shuffle一样。
 				.reduce((Double v1, Double v2) -> v1 + v2, "gender-amount-state-store");
 //		kTable.foreach((str, dou) -> System.out.printf("%s-%s\n", str, dou));
 		kTable
-			.toStream()
+			.toStream()//Convert this changelog stream to a KStream.
 			.map((String gender, Double total) -> new KeyValue<String, String>(gender, String.valueOf(total)))
 			.to("gender-amount");
 		
 		KafkaStreams kafkaStreams = new KafkaStreams(streamBuilder, props);
 		kafkaStreams.cleanUp();
-		kafkaStreams.start();
+		kafkaStreams.start();//启动流
 		
 		System.in.read();
 		kafkaStreams.close();
