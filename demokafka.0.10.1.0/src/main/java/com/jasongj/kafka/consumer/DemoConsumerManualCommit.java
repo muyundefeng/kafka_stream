@@ -41,8 +41,9 @@ public class DemoConsumerManualCommit {
 				System.out.printf("client : %s , topic: %s , partition: %d , offset = %d, key = %s, value = %s%n",
 						clientid, record.topic(), record.partition(), record.offset(), record.key(), record.value());
 				if (atomicLong.get() % 10 == 0) {
-//					consumer.commitSync();
+					consumer.commitSync();
 				}
+				atomicLong.incrementAndGet();
 			});
 		}
 	}
